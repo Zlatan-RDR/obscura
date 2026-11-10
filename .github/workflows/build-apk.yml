@@ -1,0 +1,73 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, aarch64-unknown-linux-gnu
+
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK & NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Build Obscura Binaries (ARM64)
+        run: |
+          mkdir -p /tmp/v8_prebuilt
+          curl -fL -o /tmp/v8_prebuilt/librusty_v8.a.gz \
+            https://github.com/denoland/rusty_v8/releases/download/v150.4.0/librusty_v8_simdutf_release_aarch64-unknown-linux-gnu.a.gz
+          export RUSTY_V8_ARCHIVE=/tmp/v8_prebuilt/librusty_v8.a.gz
+          cargo build --release
+
+      - name: Prepare APK Structure
+        run: |
+          mkdir -p android_build/apk/lib/arm64-v8a
+          mkdir -p android_build/apk/META-INF
+          cp target/release/obscura android_build/apk/lib/arm64-v8a/libobscura.so
+          cp target/release/obscura-worker android_build/apk/lib/arm64-v8a/libobscura_worker.so
+
+          cat << 'MANIFEST' > android_build/apk/AndroidManifest.xml
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              package="com.obscura.browser"
+              android:versionCode="1"
+              android:versionName="1.0">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <application android:label="Obscura" android:hasCode="false">
+                  <activity android:name="android.app.NativeActivity"
+                      android:exported="true">
+                      <meta-data android:name="android.app.lib_name" android:value="obscura" />
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          MANIFEST
+
+          cd android_build/apk
+          zip -r ../obscura-arm64.apk .
+          cd ../..
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: obscura-android-apk
+          path: android_build/obscura-arm64.apk
