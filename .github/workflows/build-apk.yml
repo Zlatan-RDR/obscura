@@ -26,8 +26,8 @@ jobs:
 
       - name: Install Cross Linker
         run: |
-          apt-get update
-          apt-get -y -o Dpkg::Options::=--force-confold install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu zip
+          apt-get update -qq
+          apt-get -y -o Dpkg::Options::=--force-confold install -y --no-install-recommends gcc-aarch64-linux-gnu g++-aarch64-linux-gnu zip
 
       - name: Build Obscura Binaries (ARM64)
         env:
@@ -43,6 +43,7 @@ jobs:
 
       - name: Package Signed Android APK
         run: |
+          export ANDROID_HOME=${ANDROID_HOME:-/usr/local/lib/android/sdk}
           BUILD_TOOLS_DIR=$(ls -d $ANDROID_HOME/build-tools/* | tail -n 1)
           PLATFORM_JAR=$(ls -d $ANDROID_HOME/platforms/android-*/android.jar | tail -n 1)
 
