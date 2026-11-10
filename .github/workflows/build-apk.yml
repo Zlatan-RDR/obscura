@@ -16,7 +16,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android, aarch64-unknown-linux-gnu
+          targets: aarch64-unknown-linux-gnu
 
       - name: Setup Java JDK
         uses: actions/setup-java@v4
@@ -24,25 +24,31 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Android SDK & NDK
-        uses: android-actions/setup-android@v3
+      - name: Install Cross Linker
+        run: |
+          apt-get update
+          apt-get -y -o Dpkg::Options::=--force-confold install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu zip
 
       - name: Build Obscura Binaries (ARM64)
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+          CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
         run: |
           mkdir -p /tmp/v8_prebuilt
           curl -fL -o /tmp/v8_prebuilt/librusty_v8.a.gz \
             https://github.com/denoland/rusty_v8/releases/download/v150.4.0/librusty_v8_simdutf_release_aarch64-unknown-linux-gnu.a.gz
           export RUSTY_V8_ARCHIVE=/tmp/v8_prebuilt/librusty_v8.a.gz
-          cargo build --release
+          cargo build --target aarch64-unknown-linux-gnu --release
 
-      - name: Prepare APK Structure
+      - name: Package Signed Android APK
         run: |
-          mkdir -p android_build/apk/lib/arm64-v8a
-          mkdir -p android_build/apk/META-INF
-          cp target/release/obscura android_build/apk/lib/arm64-v8a/libobscura.so
-          cp target/release/obscura-worker android_build/apk/lib/arm64-v8a/libobscura_worker.so
+          BUILD_TOOLS_DIR=$(ls -d $ANDROID_HOME/build-tools/* | tail -n 1)
+          PLATFORM_JAR=$(ls -d $ANDROID_HOME/platforms/android-*/android.jar | tail -n 1)
 
-          cat << 'MANIFEST' > android_build/apk/AndroidManifest.xml
+          mkdir -p apk_workspace/lib/arm64-v8a
+
+          cat << 'MANIFEST' > AndroidManifest.xml
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
               package="com.obscura.browser"
               android:versionCode="1"
@@ -52,7 +58,6 @@ jobs:
               <application android:label="Obscura" android:hasCode="false">
                   <activity android:name="android.app.NativeActivity"
                       android:exported="true">
-                      <meta-data android:name="android.app.lib_name" android:value="obscura" />
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LAUNCHER" />
@@ -62,12 +67,23 @@ jobs:
           </manifest>
           MANIFEST
 
-          cd android_build/apk
-          zip -r ../obscura-arm64.apk .
-          cd ../..
+          $BUILD_TOOLS_DIR/aapt package -F raw.apk -M AndroidManifest.xml -I $PLATFORM_JAR -f
+
+          cp target/aarch64-unknown-linux-gnu/release/obscura apk_workspace/lib/arm64-v8a/libobscura.so
+          cp target/aarch64-unknown-linux-gnu/release/obscura-worker apk_workspace/lib/arm64-v8a/libobscura_worker.so
+
+          cd apk_workspace
+          zip -ur ../raw.apk lib/
+          cd ..
+
+          $BUILD_TOOLS_DIR/zipalign -v -p 4 raw.apk obscura-aligned.apk
+
+          keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Obscura,O=Dev,C=US"
+
+          $BUILD_TOOLS_DIR/apksigner sign --ks debug.keystore --ks-pass pass:android --key-pass pass:android --out obscura-arm64-signed.apk obscura-aligned.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: obscura-android-apk
-          path: android_build/obscura-arm64.apk
+          name: obscura-arm64-apk
+          path: obscura-arm64-signed.apk
