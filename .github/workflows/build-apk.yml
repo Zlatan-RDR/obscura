@@ -6,17 +6,39 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-
+  build-binaries:
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Obscura Binaries (Native ARM64)
+        run: |
+          mkdir -p /tmp/v8_prebuilt
+          curl -fL -o /tmp/v8_prebuilt/librusty_v8.a.gz \
+            https://github.com/denoland/rusty_v8/releases/download/v150.4.0/librusty_v8_simdutf_release_aarch64-unknown-linux-gnu.a.gz
+          export RUSTY_V8_ARCHIVE=/tmp/v8_prebuilt/librusty_v8.a.gz
+          cargo build --release
+
+          mkdir -p dist_bins
+          cp target/release/obscura dist_bins/
+          cp target/release/obscura-worker dist_bins/
+
+      - name: Upload Native Binaries
+        uses: actions/upload-artifact@v4
         with:
-          targets: aarch64-unknown-linux-gnu
+          name: obscura-binaries
+          path: dist_bins/
+
+  package-apk:
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Setup Java JDK
         uses: actions/setup-java@v4
@@ -24,21 +46,11 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Install Toolchain and Build
-        run: |
-          set -e
-          sudo DEBIAN_FRONTEND=noninteractive apt-get --quiet update || true
-          sudo DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::=--force-confold install -y --no-install-recommends gcc-aarch64-linux-gnu g++-aarch64-linux-gnu zip || true
-          
-          mkdir -p /tmp/v8_prebuilt
-          curl -fL -o /tmp/v8_prebuilt/librusty_v8.a.gz \
-            https://github.com/denoland/rusty_v8/releases/download/v150.4.0/librusty_v8_simdutf_release_aarch64-unknown-linux-gnu.a.gz
-          export RUSTY_V8_ARCHIVE=/tmp/v8_prebuilt/librusty_v8.a.gz
-          
-          export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
-          export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
-          export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
-          cargo build --target aarch64-unknown-linux-gnu --release
+      - name: Download Obscura Binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: obscura-binaries
+          path: dist_bins
 
       - name: Package Signed Android APK
         run: |
@@ -69,8 +81,8 @@ jobs:
 
           $BUILD_TOOLS_DIR/aapt package -F raw.apk -M AndroidManifest.xml -I $PLATFORM_JAR -f
 
-          cp target/aarch64-unknown-linux-gnu/release/obscura apk_workspace/lib/arm64-v8a/libobscura.so
-          cp target/aarch64-unknown-linux-gnu/release/obscura-worker apk_workspace/lib/arm64-v8a/libobscura_worker.so
+          cp dist_bins/obscura apk_workspace/lib/arm64-v8a/libobscura.so
+          cp dist_bins/obscura-worker apk_workspace/lib/arm64-v8a/libobscura_worker.so
 
           cd apk_workspace
           zip -ur ../raw.apk lib/
